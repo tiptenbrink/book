@@ -11,4 +11,4 @@ after = ["links"]
 [preprocessor.toc]
 command = "mdbook-toc"
 renderer = ["html"]
-max-level = 2
+max-level = 3

@@ -12,8 +12,8 @@ My first serious production project was a website for D.S.A.V. Dodeka, the stude
 1. You want to automate the building of your application
 1. Your application needs access to a few secrets (like a private key) that you do not want to permanently store in your database
 1. You have access to a simple Linux server (we're going to assume its running a Debian-based sitro like Ubuntu)
-1. You want to run and test in a few different environments (like local development, staging and production)
-1. You want to run it alongside at least one external service, like a PostgreSQL database
+1. (Non-essential) You want to run and test in a few different environments (like local development, staging and production)
+1. (Non-essential) You want to run it alongside at least one external service, like a PostgreSQL database
 
 ## Optional assumptions
 
@@ -44,7 +44,8 @@ Next, we will need to package our application as a Docker container. We'll creat
 Our Dockerfile will look like this:
 
 ```Dockerfile
-# We're going to run our application using Node 20 on a Debian (version 11, called 'bookworm') slim (so with very little pre-installed) container 
+# We're going to run our application using Node 20 on a Debian (version 11,
+# called 'bookworm') slim (so with very little pre-installed) container 
 FROM node:20-bookworm-slim
 
 # Here we copy the entrypoint that will be run when the container starts
@@ -135,7 +136,7 @@ services:
     # Docker image that it will set up
     image: hellodeploy-app
     environment:
-      MY_SECRET: ${MY_SECRET:?err}
+      MY_SECRET: ${MY_SECRET_VAR:?err}
     # This maps ports according to host_hostname:host_port:container_port
     ports:
       - "127.0.0.1:8871:8871"
@@ -144,7 +145,7 @@ services:
 Now, instead of `docker run`, we use:
 
 ```bash
-MY_SECRET=secretvalue docker compose up
+MY_SECRET_VAR=secretvalue docker compose up
 ```
 
 (Note we are still passing the environment variable directly. If you're not using bash as your shell, you can whatever alternative to like to set the environment variable, although we'll later be changing this completely)
@@ -152,7 +153,7 @@ MY_SECRET=secretvalue docker compose up
 We can run it in the background using (`-d` for detached):
 
 ```bash
-MY_SECRET=secretvalue docker compose -p hellodeploy up -d
+MY_SECRET_VAR=secretvalue docker compose -p hellodeploy up -d
 ```
 
 This time we're also specifying the project name (`-p hellodeploy`). This allows us to easily shut down our project using:
@@ -218,7 +219,7 @@ permissions:
   contents: read
 
 jobs:
-  build-server:
+  build-app:
     runs-on: ubuntu-latest
     steps:
       # we check out the repository
@@ -230,23 +231,27 @@ jobs:
             cp app/*.js deploy/context
             cp app/*.json deploy/context
             cp deploy/containers/app/* deploy/context
-      # we log into the GitHub Container Registry (GHCR, alternative to Docker Hub)
+      # we log into the GitHub Container Registry (GHCR, alternative to 
+      # Docker Hub)
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor}}
           password: ${{ github.token }}
-      # Set up buildx for later build-push-action, which is necessary for cache feature
+      # Set up buildx for later build-push-action, which is necessary for 
+      # cache feature
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       # Build and push
       - name: Build and push
         uses: docker/build-push-action@v3
         with:
-          # where we moved all the files to that will be used to build the image
+          # where we moved all the files to that will be used to build 
+          # the image
           context: deploy/context
-          # replace tiptenbrink with your organization name or GitHub username (i.e. the parent name of your repo)
+          # replace tiptenbrink with your organization name or GitHub username
+          # (i.e. the parent name of your repo)
           tags: ghcr.io/tiptenbrink/hellodeploy-app:${{ inputs.env }}
           # we use the GitHub Actions (gha) cache to make future builds faster
           cache-from: type=gha
@@ -299,10 +304,24 @@ This works as follows (inspired by [this StackOverflow question](https://stackov
 Here's our new Dockerfile, which I'm putting in `deploy/containers/`:
 
 ```Dockerfile
+# Slim Debian container with Rust toolchain (including the cargo package 
+# manager) installed
 FROM rust:1-slim-bookworm
 
-RUN cargo install bws -y
-RUN cargo install nu -y
+# to easily download binaries, we need curl. we don't want our container to be 
+# too large so we delete the cache afterwards
+RUN apt-get update \
+	&& apt-get install -y curl \
+	&& rm -rf /var/lib/apt/lists/* \
+	&& rm -rf /var/cache/apt/*
+
+# quickinstall is easy to compile
+RUN cargo install cargo-quickinstall
+# we then get cargo-binstall as a binary using quickinstall
+RUN cargo quickinstall cargo-binstall
+# we can now easily get these as binaries also
+RUN cargo binstall bws -y
+RUN cargo binstall nu -y
 
 WORKDIR /dployer
 
@@ -311,14 +330,15 @@ COPY entrypoint.nu .
 ENTRYPOINT ["./entrypoint.nu"]
 ```
 
-We're installing two Rust programs, Bitwarden Secrets Manager and Nushell. I'm writing the entrypoint in Nu because it provides some nice out-of-the-box ways to deal with JSON (which is output by Bitwarden Secrets Manager). Of course, if you're more comfortable with `jq` and just bash, definitely use that instead. I do think the Nushell code is very understandable.
+We're installing two Rust programs, Bitwarden Secrets Manager and Nushell ([check out the latter if you haven't already!](https://www.nushell.sh/)). I'm writing the entrypoint in Nu because it provides some nice out-of-the-box ways to deal with JSON (which is output by Bitwarden Secrets Manager). Of course, if you're more comfortable with `jq` and just bash, definitely use that instead. I do think the Nushell code is very understandable.
 
 Here's the `entrypoint.nu` ([link with syntax highlighting](https://github.com/tiptenbrink/hellodeploy/blob/main/deploy/containers/deployer/entrypoint.nu)):
 
 ```nu
 #!/usr/bin/env nu
 def secret_to_pipe [secret: string, pipe: string] {
-    # we request the secret from Bitwarden Secret Manager using its id, loading it as JSON
+    # we request the secret from Bitwarden Secret Manager using its id, loading 
+    # it as JSON
     let j = bws secret get $secret | from json
     # the key is identical to the environment variable key
     let k = $j | get key
@@ -333,7 +353,8 @@ def from_deploy [file, pipe: string] {
     let j = open $file --raw | decode utf-8 | from json
     # we get the value of secrets.ids, which is an array of id values
     let secrets = $j | get secrets | get ids
-    # we call the secret_to_pipe function for each id and also add the name of the pipe as an argument
+    # we call the secret_to_pipe function for each id and also add the name of 
+    # the pipe as an argument
     for $e in $secrets { secret_to_pipe $e $pipe }
 }
 
@@ -348,9 +369,144 @@ def main [] {
 
 So what is this named pipe? Well, we're going to have to create it. It's a very simple FIFO pipe located in a file. It's what we will use to communicate between the Docker container and host.
 
-## Security best practices
+First though, we will also want to build our deployer container automatically. This is almost an exact copy-paste of the previous GitHub Actions workflow file, so I won't repeat it here. [Check out the repository](https://github.com/tiptenbrink/hellodeploy/blob/bd3ebd7ae746a48a7619d87d6bd53d4a24b7953a/.github/workflows/deployer.yml) if you're unsure.
+
+### Bitwarden Secrets Manager
+
+Before we move on, you will now need to store the "secretvalue" in Bitwarden Secrets Manager. [Here's a guide](https://bitwarden.com/help/secrets-manager-overview/) on how to use it. You will need to make an organization and subscribe to secrets manager (which is free). You'll need to log in to the web version and then you can open Secrets Manager through the product switcher in the top right (the little app grid icon). Then, you can create a project and add secrets to it. 
+
+I recommend making their name identical to the environment variable you will pass into Docker Compose (in our case `MY_SECRET_VAR`). If you don't do that, you will need to modify the `entrypoint.nu` script or the script we're going to make in the next section to ensure it has the right name before being passed to Docker Compose.
+
+Finally, you'll want to make a "service account" and give it read permission to the project that contains your secrets. Once you've done that, you can generate an access token. Keep this access token very safe! As safe as you would the master password of your password manager, as it gives access to all secrects the associated service account can read. In the main part of this tutorial, we won't exactly be keeping it very safe, but do check out the recommended sections as well for some guidance.
+
+You'll also want to get the "ids" of the secrets you created. These are random identifiers that are safe to show publicly as you will still need the access token to actually retrieve the secrets. Note that with the access token you can easily access these id's so there's no benefit to securing them. Let's assume the id of `MY_SECRET_VAR` is "abcdef01-23fe-dcba-4567-abcd89876543".
+
+### Deploy unit
+
+Now we'll return to our actual deployment, so let's go back to the `deploy/use/production` folder. Remember, we're going to use our deployer container as a script to get our secrets for us. However, as you might have seen, the `entrypoint.nu` needs a file called "tidploy.json" which we haven't  provided to it. It will be this file that is going to contain the id's of our secrets.
+
+`tidploy.json` is going to have a certain structure that will align with our `entrypoint.nu` script:
+
+```json
+{
+    "secrets": {
+        "ids": [
+            "abcdef01-23fe-dcba-4567-abcd89876543"
+        ]
+    }
+}
+```
+
+Finally, we'll need two more scripts. First, the script that will read the secrets and start our server (`source.sh`):
+
+```bash
+#!/bin/bash
+# we want to auto-export all environment variables we set so docker compose can use them
+set -a
+echo "Waiting for secrets..."
+while [ true ] 
+do 
+    # -p means if file exists and is named pipe
+    # $1 is first argument to our script
+    if [ -p "$1" ]; then
+        echo "Loaded secret."
+        . $1
+    else
+        sleep 1
+    fi
+
+    if [ -n "$TIDPLOY_READY" ]; then
+        echo "Starting...."
+        # ensure we have the latest version of our images
+        docker compose pull
+        # here we start our compose file as before
+        docker compose -p hellodeploy up -d
+        break
+    fi
+done
+```
+
+And then, to tie it all together, our deployer script (which we will call `dployer.sh`):
+
+```bash
+#!/bin/bash
+# remove the pipe if it somehow still exists
+rm -f deploypipe
+# create a named fifo pipe at ./deploypipe
+mkfifo deploypipe
+# run the deployer, providing it with the Secrets Manager access token and
+# mounting the named pipe as well as the JSON containing the secrets to the 
+# container
+# be sure to replace ghcr.io/tiptenbrink/hellodeploy-deployer:latest with the 
+# location of your own container
+# the process is started in the background (the '&') and then we run our 
+# previous script with the name of the pipe as the first argument
+docker run \
+  -e BWS_ACCESS_TOKEN \
+  -v ./deploypipe:/dployer/ti_dploy_pipe \
+  -v ./tidploy.json:/dployer/tidploy.json \
+  ghcr.io/tiptenbrink/hellodeploy-deployer:latest & \
+./source.sh ./deploypipe
+# finally we clean up the pipe by removing it
+rm deploypipe
+```
+
+That's it! Let's get to deploying it to our server.
+
+## 5. Linux server
+
+Now that we have all our files ready and our images built, we want to get things running on our server. I am going to assume you have some way of exposing the port of your app to the outside world (e.g. with an nginx reverse proxy). Be sure you've already set up all of that before this step! Other than that, all you will need on your server is Git and Docker (with Docker Compose).
+
+First, we're going to check out our repository. This might be immediately problematic if your repository has a very long history or contains a lot of large assets. If this is a problem, refer to the optional section [about partial clones and sparse checkout](#optional-partial-clone-and-sparse-checkout).
+
+Once you have the repository checked out on your server, let's navigate to the `deploy/use/production` folder, which includes our Docker Compose file, the two scripts and our JSON file with the secret ids:
+
+```
+deploy
+├── containers
+│   └── ...
+└── use
+    └── production
+        ├── docker-compose.yml
+        ├── dployer.sh
+        ├── source.sh
+        └── tidploy.json
+```
+
+Then, all we have to do is run `BWS_ACCESS_TOKEN=<your access token> ./source.sh`.
+
+But wait... how is that better than what we did at the start, when we just said `MY_SECRET_VAR=secretvalue docker compose -p hellodeploy up -d`. We're still putting a secret right into the command line. In fact, our access token is even more sensitive than just the one secret! So why did we put in all this effort?
+
+The first reason is that if we have more than one secret, we still have to only pass in the access token, the rest will be done by our script. The second, less satisfying reason is, from now on simple shell scripts won't save you. I'll suggest three alternatives to passing in the access token. We'll discuss method 3 in the recommended section on [tidploy](#recommended-tidploy).
+
+1. Store the access token in a file on your server, maybe only accessible to a specific user, with the format `MY_SECRET_VAR=secretvalue`. Before running the script, you then simply run `. <my secret file>` to load the environment variable (you might need to run `set -a` first to make sure it's exported). I don't recommend this, but it's better than just passing it in each time over the command line. NOT RECOMMENDED.
+1. Run your script remotely with automations. For example, you could set up a GitHub Action that stores your access token safely in the GitHub environment, which then SSH's into your server (with the token loaded into the environment) and runs the `source.sh` script. This is one of the best solutions, but it requires setting up remote access and running automated scripts over SSH is not my favorite. I like being the one who actually runs it. 
+1. Use an external program to store your secret in the OS' keyring/keychain and load it when you wan to run the script. This is my recommended solution and the one I will discuss, but it does require writing an actual CLI program (or using somebody elses) that can leverage the OS keyring APIs. Two libraries I recommend for this (one of which I will be using) are [keyring (Python)](https://github.com/jaraco/keyring) and [keyring-rs (Rust)](https://github.com/hwchen/keyring-rs). This means you can ensure your access token is never persistently stored in plaintext. See the recommended section on [tidploy](#recommended-tidploy) for more details.
+
+So, I recommend using either method 2 or 3. If you're okay with an external dependency or if you don't mind writing your own CLI applications, I recommend 3.
+
+That's it for the essential portion of this guide! Remember you can easily shut down using `docker compose -p hellodeploy down` from anywhere on your server. Also note that if you re-run the script (if container names and the project name are the same), Docker is smart enough to recreate the images if there's a newer version. If the images are the same, Docker will simply keep them running! The script is therefore (somewhat, as it does depend on external services like GHCR and Bitwarden Secrets Manager) idempotent. 
+
+## Security considerations
 
 ## Recommended: tidploy
+
+## Optional: partial clone and sparse checkout
+
+To minimize the amount of files downloaded to your server when getting the deploy script. You can use two modern Git features: partial (and sparse) clone and sparse-checkout. Here is what you want to run:
+
+```
+git clone https://github.com/tiptenbrink/hellodeploy.git sparsedeploy --sparse --filter=tree:0
+cd sparsedeploy
+git sparse-checkout init --cone
+git sparse-checkout set deploy/use/production
+```
+
+In the first command we're doing a clone, but we add the `--sparse` and `--filter=tree:0` options. The first one will only clone files in the root directory (so make sure there's not too many!) while the second will not download any trees and blobs from previous commits. It _will_ download commit data, but this is recommended so you can still access previous commits if you want to (it will then download the necessary objects on demand).
+
+The second git command will initialize sparse-checkout mode and set it to "cone" mode. This is generally recommended (this will for exmaple ensure .gitignore files at the top-level are still checked out). The final git command will set which directory you actually want to be checked out, in our case only the deployment scripts.
+
+This will result in a repository with some files at the top level (like the LICENSE), then a few nested directories and finally only the contents of `deploy/use/production`, exactly what we want.
 
 ## Optional: configuration management
 
