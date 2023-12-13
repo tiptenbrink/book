@@ -330,22 +330,21 @@ COPY entrypoint.nu .
 ENTRYPOINT ["./entrypoint.nu"]
 ```
 
-We're installing two Rust programs, Bitwarden Secrets Manager and Nushell ([check out the latter if you haven't already!](https://www.nushell.sh/)). I'm writing the entrypoint in Nu because it provides some nice out-of-the-box ways to deal with JSON (which is output by Bitwarden Secrets Manager). Of course, if you're more comfortable with `jq` and just bash, definitely use that instead. I do think the Nushell code is very understandable.
+We're installing two Rust programs, Bitwarden Secrets Manager and Nushell ([check out the latter if you haven't already!](https://www.nushell.sh/)). I'm writing the entrypoint in Nu because it provides some nice out-of-the-box ways to deal with JSON (which is output by Bitwarden Secrets Manager) and can easily utilize parallelism. Of course, if you're more comfortable with `jq` and just bash, definitely use that instead. I do think the Nushell code is very understandable.
 
 Here's the `entrypoint.nu` ([link with syntax highlighting](https://github.com/tiptenbrink/hellodeploy/blob/main/deploy/containers/deployer/entrypoint.nu)):
 
 ```nu
 #!/usr/bin/env nu
-def secret_to_pipe [secret: string, pipe: string] {
-    # we request the secret from Bitwarden Secret Manager using its id, loading 
-    # it as JSON
+def secret_to_pipe [secret: string] {
+    # we request the secret from Bitwarden Secret Manager using its id, loading it as JSON
     let j = bws secret get $secret | from json
     # the key is identical to the environment variable key
     let k = $j | get key
     # the value is the actual secret
     let v = $j | get value
     # for each secret we append a newline and <KEY>=<VALUE> to the named pipe
-    echo $"\n($k)=($v)" | save $pipe --append
+    return $"\n($k)=($v)"
 }
 
 def from_deploy [file, pipe: string] {
@@ -353,9 +352,11 @@ def from_deploy [file, pipe: string] {
     let j = open $file --raw | decode utf-8 | from json
     # we get the value of secrets.ids, which is an array of id values
     let secrets = $j | get secrets | get ids
-    # we call the secret_to_pipe function for each id and also add the name of 
-    # the pipe as an argument
-    for $e in $secrets { secret_to_pipe $e $pipe }
+    # we call the secret_to_pipe function for each id in parallel and join them 
+    # with new lines
+    let output = $secrets | par-each { |e| secret_to_pipe $e } | str join "\n"
+    # the result we send to the pipe
+    echo $output | save $pipe --append
 }
 
 # main entrypoint
@@ -369,7 +370,7 @@ def main [] {
 
 So what is this named pipe? Well, we're going to have to create it. It's a very simple FIFO pipe located in a file. It's what we will use to communicate between the Docker container and host.
 
-First though, we will also want to build our deployer container automatically. This is almost an exact copy-paste of the previous GitHub Actions workflow file, so I won't repeat it here. [Check out the repository](https://github.com/tiptenbrink/hellodeploy/blob/bd3ebd7ae746a48a7619d87d6bd53d4a24b7953a/.github/workflows/deployer.yml) if you're unsure.
+First though, we will also want to build our deployer container automatically. This is almost an exact copy-paste of the previous GitHub Actions workflow file, so I won't repeat it here. [Check out the repository](https://github.com/tiptenbrink/hellodeploy/blob/8ad6c682a609cb3872900543b660b4d57e870ba6/.github/workflows/deployer.yml) if you're unsure.
 
 ### Bitwarden Secrets Manager
 
@@ -406,11 +407,10 @@ set -a
 echo "Waiting for secrets..."
 while [ true ] 
 do 
-    # -p means if file exists and is named pipe
-    # $1 is first argument to our script
+    # if file exists and is named pipe
     if [ -p "$1" ]; then
-        echo "Loaded secret."
         . $1
+    # if pipe doesn't exist we don't want to run too many loops
     else
         sleep 1
     fi
@@ -422,6 +422,8 @@ do
         # here we start our compose file as before
         docker compose -p hellodeploy up -d
         break
+    else
+        echo "Loaded secrets."
     fi
 done
 ```
@@ -430,6 +432,17 @@ And then, to tie it all together, our deployer script (which we will call `dploy
 
 ```bash
 #!/bin/bash
+
+cleanup() {
+    echo
+    echo "Removing pipe..."
+    rm -f deploypipe
+    exit 1
+}
+
+# if you do Ctrl+C it will run cleanup
+trap cleanup SIGINT
+
 # remove the pipe if it somehow still exists
 rm -f deploypipe
 # create a named fifo pipe at ./deploypipe
@@ -455,7 +468,7 @@ That's it! Let's get to deploying it to our server.
 
 ## 5. Linux server
 
-Now that we have all our files ready and our images built, we want to get things running on our server. I am going to assume you have some way of exposing the port of your app to the outside world (e.g. with an nginx reverse proxy). Be sure you've already set up all of that before this step! Other than that, all you will need on your server is Git and Docker (with Docker Compose).
+Now that we have all our files ready and our images built, we want to get things running on our server. I am going to assume you have some way of exposing the port of your app to the outside world (e.g. with an nginx reverse proxy). Be sure you've already set up all of that before this step! Other than that, all you will need on your server is Git, Docker (with Docker Compose) and bash.
 
 First, we're going to check out our repository. This might be immediately problematic if your repository has a very long history or contains a lot of large assets. If this is a problem, refer to the optional section [about partial clones and sparse checkout](#optional-partial-clone-and-sparse-checkout).
 
@@ -487,9 +500,116 @@ So, I recommend using either method 2 or 3. If you're okay with an external depe
 
 That's it for the essential portion of this guide! Remember you can easily shut down using `docker compose -p hellodeploy down` from anywhere on your server. Also note that if you re-run the script (if container names and the project name are the same), Docker is smart enough to recreate the images if there's a newer version. If the images are the same, Docker will simply keep them running! The script is therefore (somewhat, as it does depend on external services like GHCR and Bitwarden Secrets Manager) idempotent. 
 
+## 6. External service
+
+Let's discuss how to add a PostgreSQL database to our application. We'll set up a new app, `app-multi`. I won't write the full source code here, but we'll add the following routes:
+
+- `/db/` will query the database, returning "Helloy deploy!". 
+- `/mode/` will return the current environment (which we'll introduce in the next section), which it reads from the `APP_MODE` environment variable.
+
+The app connect to the default "postgres" database as user "postgres", using the password and port set by `POSTGRES_PASSWORD` and `POSTGRES_PORT`, respectively. If the environment is "localdev" it will connect using localhost, while otherwise it will use "hellodeploy-db-\<environment\>" (where environment is the value of the APP_MODE variable) as the host name (more on the latter later).
+
+You can see the source code here []
+
+### Database container
+
+For demonstration purposes (to show you how you can change settings yourself), we'll use a custom `pg_hba.conf` (host-based authentication) and `postgresql.conf`. The `pg_hba.conf` is set to require a password and allow connections from all hosts. The database will listen on all addresses and use port 3141 instead of the default. We do this so that we can't just use the default on everything, to demonstrate that we have indeed set up our environment variables correctly!
+
+Our Dockerfile then looks as follows:
+
+```Dockerfile
+FROM postgres:16-bookworm
+ADD postgresql.conf /conf_dir/postgresql.conf
+ADD pg_hba.conf /conf_dir/pg_hba.conf
+CMD ["postgres", "-c", "config_file=/conf_dir/postgresql.conf"]
+```
+
+See the repository here [] for the contents of our configuration files. 
+
+Again, we want to set up actions to build these automatically in our repository. These will be almost identical to the previous `app.yml`, so I won't go into detail here. See the repository for details [].
+
+### Docker Compose file
+
+Let's dive straight into it:
+
+
+```yaml
+services:
+  db:
+    container_name: hellodeploy-db-production
+    image: ghcr.io/tiptenbrink/hellodeploy-db:production
+    # A volume is basically a file system shared between the host and 
+    # the container
+    volumes:
+      # <volume name in volumes below>:<container destination directory>
+      # This means the volume will be accessible from the container in the 
+      # dest. directory in the container
+      - hellodeploy-db-volume:/hellodeploy-db
+    environment:
+      - PGDATA=/hellodeploy-db
+      - POSTGRES_PASSWORD
+      - POSTGRES_USER
+    ports:
+      - "127.0.0.1:3141:3141"
+  
+  app-multi:
+    depends_on:
+      - db
+    container_name: hellodeploy-app-multi-production
+    image: ghcr.io/tiptenbrink/hellodeploy-app-multi:production
+    environment:
+      MY_SECRET: ${MY_SECRET_VAR:?err}
+      # we're okay if they're empty so we set default empty values
+      POSTGRES_PASSSWORD: ${POSTGRES_PASSSWORD:-}
+      POSTGRES_PORT: ${POSTGRES_PORT:-}
+      APP_MODE: ${APP_MODE}
+    ports:
+      - "127.0.0.1:8871:8871"
+volumes:
+  # This name should correspond to the volume mentioned in volumes above
+  hellodeploy-db-volume:
+    # A local directory
+    driver: local
+    name: hellodeploy-db-volume-production
+networks:
+  # Set up a network so that other containers on this network can access
+  # each other. A different container on this network can access this container
+  # by using the container name as the hostname
+  # So localhost:3000 is exposed to other containers as <container name>:3000
+  default:
+    name: hellodeploy
+```
+
+The network and volume additions are the most important. We want our database to not remove its data when the container stops, so we need some kind of persistence. For that, we need to use the host machine. That's why we use Docker volumes, which will remember the data put into them by the container. We mount this at `/hellodeploy-db` in the container and tell Postgres (by the PGDATA variable) that this is where the database should store its data.
+
+The shared network allows communication between the containers. Remember we set the hostname used by our new app to connect to the database to be `hellodeploy-db-production` (when we're in the production environment, which is always the case right now). This is possible because they are on the same network. 
+
+## 6. Different environments
+
+Imagine your staging environment has a few different variables from your production environment. Your local development setup is probably even more different! How can we solve this?
+
+Well, it's quite easy. Remember, previously we only made the `deploy/use/production` directory. Let's set up a staging environment
+
 ## Security considerations
 
 ## Recommended: tidploy
+
+## Optional: without deployer container
+
+If you don't like the container solution with named pipes to externalize the secret loading logic from your server, it's pretty easy to just do this on your server directly. That does mean you will have to install a Rust toolchain, `nu` (except if you write your own script) and `bws` (the Bitwarden Secrets Manager CLI).
+
+`source.sh` becomes simply:
+
+```bash
+#!/bin/bash
+set -a
+secrets=$(nu secrets.nu)
+eval "$secrets"
+docker compose pull
+docker compose -p hellodeploy up -d
+```
+
+`secrets.nu` is the modified version of our previous `entrypoint.nu` that we ran in the container. It's a small modification, which you can find on the repository [here](https://github.com/tiptenbrink/hellodeploy/blob/8ad6c682a609cb3872900543b660b4d57e870ba6/deploy/use/production_no_container/secrets.nu).
 
 ## Optional: partial clone and sparse checkout
 
