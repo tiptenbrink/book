@@ -410,20 +410,19 @@ do
     # if file exists and is named pipe
     if [ -p "$1" ]; then
         . $1
+        if [ -n "$TIDPLOY_READY" ]; then
+            echo "Starting...."
+            # ensure we have the latest version of our images
+            docker compose pull
+            # here we start our compose file as before
+            docker compose -p hellodeploy up -d
+            break
+        else
+            echo "Secrets loaded."
+        fi
     # if pipe doesn't exist we don't want to run too many loops
     else
         sleep 1
-    fi
-
-    if [ -n "$TIDPLOY_READY" ]; then
-        echo "Starting...."
-        # ensure we have the latest version of our images
-        docker compose pull
-        # here we start our compose file as before
-        docker compose -p hellodeploy up -d
-        break
-    else
-        echo "Loaded secrets."
     fi
 done
 ```
@@ -583,6 +582,24 @@ networks:
 The network and volume additions are the most important. We want our database to not remove its data when the container stops, so we need some kind of persistence. For that, we need to use the host machine. That's why we use Docker volumes, which will remember the data put into them by the container. We mount this at `/hellodeploy-db` in the container and tell Postgres (by the PGDATA variable) that this is where the database should store its data.
 
 The shared network allows communication between the containers. Remember we set the hostname used by our new app to connect to the database to be `hellodeploy-db-production` (when we're in the production environment, which is always the case right now). This is possible because they are on the same network. 
+
+### Env file
+
+To keep the Docker Compose as general as possible, I suggest to keep as many runtime options a .env file as possible. In our case, we have POSTGRES_PORT and APP_MODE. Let's define a file called "production.env" in our `deploy/use/production` as follows:
+
+```bash
+POSTGRES_PORT=3141
+APP_MODE=production
+```
+
+To make sure this is loaded by Docker Compose, let's modify our `source.sh` slightly:
+
+* ~~docker compose pull~~ `docker compose --env-file production.env pull`
+* ~~docker compose -p hellodeploy up -d~~ `docker compose --env-file production.env -p hellodeploy up -d`
+
+### Deploying
+
+Thanks to our efforts in the previous section, deploying works exactly the same! Simply run `./dployer.sh`, but now using the modified files in `deploy/use/production`. Of course, we do have to add the new secret (the `POSTGRES_PASSWORD`) to Bitwarden Secrets Manager and add its id to our `tidploy.json`. Other than that, we are done! 
 
 ## 6. Different environments
 
