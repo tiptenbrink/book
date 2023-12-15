@@ -292,7 +292,7 @@ In the main part of this guide I will not be using any of my own tools, but I do
 
 (If you're using `tideploy` and Bitwarden Secrets Manager, you won't need to build your own deployer image)
 
-Our main goal is to minimize the use of complex bash scripts and maximize our direct use of Docker. So, we will be using a Docker container as a sort of script to collect our secrets and load them as environment variables, before actually running our applciation.
+Our main goal is to minimize dependencies installed in our server, which we do by containerizing as much as possible. So, we will be using a Docker container as a sort of script to collect our secrets and load them as environment variables, before actually running our applciation.
 
 This works as follows (inspired by [this StackOverflow question](https://stackoverflow.com/questions/32163955/how-to-run-shell-script-on-host-from-docker-container)):
 
@@ -300,6 +300,8 @@ This works as follows (inspired by [this StackOverflow question](https://stackov
 - We call this container, providing it only with an access token
 - The container loads the secrets from our secrets manager and then passes them back to the host through a named pipe
 - The host calls our entrypoint, which starts up Docker
+
+If you feel that this is too much complexity, and you'd rather just run the Secrets Manager CLI directly on your server, check out the [optional section on how to do it without a container](#optional-without-deployer-container).
 
 Here's our new Dockerfile, which I'm putting in `deploy/containers/`:
 
@@ -338,13 +340,19 @@ Here's the `entrypoint.nu` ([link with syntax highlighting](https://github.com/t
 #!/usr/bin/env nu
 def secret_to_pipe [secret: string] {
     # we request the secret from Bitwarden Secret Manager using its id, loading it as JSON
-    let j = bws secret get $secret | from json
-    # the key is identical to the environment variable key
+    let bws_res = do { bws secret get $secret } | complete
+    let bws_exit = $bws_res | get exit_code
+
+    if $bws_exit != 0 {
+        print $"Bitwarden Secrets Manager CLI failed with output:\n ($bws_res | get stderr)"
+        exit $bws_exit
+    }
+
+    let j = $bws_res | get stdout | from json
+
     let k = $j | get key
-    # the value is the actual secret
     let v = $j | get value
-    # for each secret we append a newline and <KEY>=<VALUE> to the named pipe
-    return $"\n($k)=($v)"
+    return $"($k)=($v)"
 }
 
 def from_deploy [file, pipe: string] {
@@ -601,11 +609,17 @@ To make sure this is loaded by Docker Compose, let's modify our `source.sh` slig
 
 Thanks to our efforts in the previous section, deploying works exactly the same! Simply run `./dployer.sh`, but now using the modified files in `deploy/use/production`. Of course, we do have to add the new secret (the `POSTGRES_PASSWORD`) to Bitwarden Secrets Manager and add its id to our `tidploy.json`. Other than that, we are done! 
 
-## 6. Different environments
+## 7. Different environments
 
 Imagine your staging environment has a few different variables from your production environment. Your local development setup is probably even more different! How can we solve this?
 
-Well, it's quite easy. Remember, previously we only made the `deploy/use/production` directory. Let's set up a staging environment
+Well, it's quite easy. Remember, previously we only made the `deploy/use/production` directory. Let's set up a staging environment by creating a new `deploy/use/staging` folder. We copy over everything inside production, and change all mentions of 'production' to staging. We can of course also change other settings. For an example, check out the repository: 
+
+You can decide whether you want to also build the containers using completely separate Dockerfiles, or change things depending on arguments provided to them.
+
+Note that making a different folder and changing everything means that you are definitely repeating yourself, a lot. Each time you make a change to one of the files, you have to duplicate it across all environments. This is not ideal, which is why I recommend using some kind of configuration management system to generate the different files from a single source. 
+
+See the optional section on [configuration management](#optional-configuration-management) for more details.
 
 ## Security considerations
 
@@ -649,21 +663,32 @@ This will result in a repository with some files at the top level (like the LICE
 
 ## Optional: command shortcuts
 
-## Appendix A: dependencies
+## Other recommendations
+
+## Appendix: dependencies
 
 ### Required server dependencies
 
-(We're assuming all the basic dependencies on a standard Ubuntu image are installed, like a modern version of Python, git, bash, a C library, etc.)
+(We're assuming all the basic dependencies on a standard Ubuntu server image are installed, like curl, git, bash, a C library, etc.)
 
+* A modern version of Git (I recommend at least 2.34+)
 * `Docker Engine` and `Docker Compose`
 * That's it!
 
+### Installing Rust programs
+
+To install `tidploy` and/or `bws`, you probably want to have a minimal Rust toolchain installed (via https://rustup.rs/), which will include `cargo`. However, by default cargo will compile from source, which can take quite long on servers with few resources, so binary installation is the easiest solution. To install these programs easily, do:
+  * `cargo install cargo-quickinstall` (quickinstall compiles quite fast)
+  * `cargo quickinstall cargo-binstall`
+  * `cargo bininstall <tool>` (where `<tool>` can be `bws` and `tidploy`)
+
 ### Recommended
 
-* `bws` (Bitwarden Secrets Manager CLI)
-* `tidploy`
-* To install `tidploy` and `bws`, you probably want to have a minimal Rust toolchain installed, which will include `cargo`. Howeve, by default cargo will compile from source, which can take quite long on small VMs, so binary installation is the easiest solution. To install these programs easily, do:
-    * `cargo install cargo-quickinstall`
-    * `cargo quickinstall cargo-binstall`
-    * `cargo bininstall <tool>` (where `<tool>` can be `bws` and `tidploy`)
+* [`tidploy`](https://github.com/tiptenbrink/tidploy) (Store your access token and easily deploy a specific version)
+
+
+### Optional
+
+* [`bws`](https://bitwarden.com/help/secrets-manager-cli/) (Bitwarden Secrets Manager CLI, in case you're [not using the deployer container](#optional-without-deployer-container))
+* [`confspawn`](https://github.com/tiptenbrink/confspawn) (configuration management, see [this section](#optional-configuration-management))
 
