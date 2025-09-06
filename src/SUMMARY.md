@@ -4,4 +4,4 @@
 - [Tools](./tools.md)
 - [Articles](./articles.md)
     - [Deploying your hobby project](./articles/hobby.md)
-
+    - [Zig](./articles/zig.md)
