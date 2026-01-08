@@ -1,12 +1,8 @@
 [book]
 authors = ["Tip ten Brink"]
 language = "en"
-multilingual = false
 src = "src"
 title = "tipbook"
-
-[preprocessor.katex]
-after = ["links"]
 
 [preprocessor.toc]
 command = "mdbook-toc"
