@@ -1,5 +1,7 @@
 # Deploying your hobby project
 
+> **OUTDATED: I no longer recommend to follow the below.** It is kept for historical purposes. For secrets management, take a look at [fnox](https://github.com/jdx/fnox). The example repository, `hellodeploy`, is archived in [`tiptenbrink/mono-old`](https://github.com/tiptenbrink/mono-old/tree/master/hellodeploy).
+
 My first serious production project was a website for D.S.A.V. Dodeka, the student athletics association I'm a member of. We wanted to implement a login system and for that we need to deploy code to a server. We also needed a database, so this would also have to run on this server. Furthermore, we have very little funds. We also already had a frontend and we made the choice to have a fully separate backend with a simple API. This describes my journey and can serve as a guide for those in a similar situation.
 
 <!-- toc -->
@@ -334,7 +336,7 @@ ENTRYPOINT ["./entrypoint.nu"]
 
 We're installing two Rust programs, Bitwarden Secrets Manager and Nushell ([check out the latter if you haven't already!](https://www.nushell.sh/)). I'm writing the entrypoint in Nu because it provides some nice out-of-the-box ways to deal with JSON (which is output by Bitwarden Secrets Manager) and can easily utilize parallelism. Of course, if you're more comfortable with `jq` and just bash, definitely use that instead. I do think the Nushell code is very understandable.
 
-Here's the `entrypoint.nu` ([link with syntax highlighting](https://github.com/tiptenbrink/hellodeploy/blob/main/deploy/containers/deployer/entrypoint.nu)):
+Here's the `entrypoint.nu` ([link with syntax highlighting](https://github.com/tiptenbrink/mono-old/blob/master/hellodeploy/deploy/containers/deployer/entrypoint.nu)):
 
 ```nu
 #!/usr/bin/env nu
@@ -378,7 +380,7 @@ def main [] {
 
 So what is this named pipe? Well, we're going to have to create it. It's a very simple FIFO pipe located in a file. It's what we will use to communicate between the Docker container and host.
 
-First though, we will also want to build our deployer container automatically. This is almost an exact copy-paste of the previous GitHub Actions workflow file, so I won't repeat it here. [Check out the repository](https://github.com/tiptenbrink/hellodeploy/blob/8ad6c682a609cb3872900543b660b4d57e870ba6/.github/workflows/deployer.yml) if you're unsure.
+First though, we will also want to build our deployer container automatically. This is almost an exact copy-paste of the previous GitHub Actions workflow file, so I won't repeat it here. [Check out the repository](https://github.com/tiptenbrink/mono-old/blob/8d2fd746a6f789b425dbaebd854e83c19bb03e3e/hellodeploy/.github/workflows/deployer.yml) if you're unsure.
 
 ### Bitwarden Secrets Manager
 
@@ -640,24 +642,24 @@ docker compose pull
 docker compose -p hellodeploy up -d
 ```
 
-`secrets.nu` is the modified version of our previous `entrypoint.nu` that we ran in the container. It's a small modification, which you can find on the repository [here](https://github.com/tiptenbrink/hellodeploy/blob/8ad6c682a609cb3872900543b660b4d57e870ba6/deploy/use/production_no_container/secrets.nu).
+`secrets.nu` is the modified version of our previous `entrypoint.nu` that we ran in the container. It's a small modification, which you can find on the repository [here](https://github.com/tiptenbrink/mono-old/blob/8d2fd746a6f789b425dbaebd854e83c19bb03e3e/hellodeploy/deploy/use/production_no_container/secrets.nu).
 
 ## Optional: partial clone and sparse checkout
 
 To minimize the amount of files downloaded to your server when getting the deploy script. You can use two modern Git features: partial (and sparse) clone and sparse-checkout. Here is what you want to run:
 
 ```
-git clone https://github.com/tiptenbrink/hellodeploy.git sparsedeploy --sparse --filter=tree:0
+git clone https://github.com/tiptenbrink/mono-old.git sparsedeploy --sparse --filter=tree:0
 cd sparsedeploy
 git sparse-checkout init --cone
-git sparse-checkout set deploy/use/production
+git sparse-checkout set hellodeploy/deploy/use/production
 ```
 
 In the first command we're doing a clone, but we add the `--sparse` and `--filter=tree:0` options. The first one will only clone files in the root directory (so make sure there's not too many!) while the second will not download any trees and blobs from previous commits. It _will_ download commit data, but this is recommended so you can still access previous commits if you want to (it will then download the necessary objects on demand).
 
 The second git command will initialize sparse-checkout mode and set it to "cone" mode. This is generally recommended (this will for exmaple ensure .gitignore files at the top-level are still checked out). The final git command will set which directory you actually want to be checked out, in our case only the deployment scripts.
 
-This will result in a repository with some files at the top level (like the LICENSE), then a few nested directories and finally only the contents of `deploy/use/production`, exactly what we want.
+This will result in a repository with some files at the top level (like the LICENSE), then a few nested directories and finally only the contents of `hellodeploy/deploy/use/production`, exactly what we want.
 
 ## Optional: configuration management
 
@@ -691,4 +693,3 @@ To install `tidploy` and/or `bws`, you probably want to have a minimal Rust tool
 
 * [`bws`](https://bitwarden.com/help/secrets-manager-cli/) (Bitwarden Secrets Manager CLI, in case you're [not using the deployer container](#optional-without-deployer-container))
 * [`confspawn`](https://github.com/tiptenbrink/confspawn) (configuration management, see [this section](#optional-configuration-management))
-

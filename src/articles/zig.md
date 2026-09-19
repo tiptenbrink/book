@@ -1,5 +1,7 @@
 # Zig
 
+**OUTDATED: I no longer recommend to follow the below.**: I recommend to use Nix to manage your Zig installations instead.
+
 See [Zig wiki](https://github.com/ziglang/zig/wiki/Building-Zig-From-Source) for up to date info.
 
 ## LLVM
